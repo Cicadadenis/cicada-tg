@@ -966,10 +966,7 @@ class Executor:
             return
 
         if ctx.waiting_for:
-            ctx.set(ctx.waiting_for, data)
-            ctx.waiting_for = None
-            if ctx.scenario:
-                self._continue_scenario(ctx)
+            self._resume_waiting_input(ctx, data)
             # `вернуть` должен влиять только на текущую обработку тела,
             # но не на after_each middleware.
             ctx._return_requested = False
@@ -996,6 +993,20 @@ class Executor:
         # `вернуть` не должен обрезать after_each.
         ctx._return_requested = False
         self._run_after_each(ctx)
+
+    def _resume_waiting_input(self, ctx, value):
+        """Сохраняет ответ пользователя и продолжает отложенное выполнение."""
+        ctx.set(ctx.waiting_for, value)
+        ctx.waiting_for = None
+
+        if ctx.scenario:
+            self._continue_scenario(ctx)
+            return
+
+        pending = getattr(ctx, "_pending_stmts", None)
+        if pending:
+            ctx._pending_stmts = []
+            self._exec_body(pending, ctx)
 
     def _handle_message(self, msg: dict):
         chat_id   = msg["chat"]["id"]
@@ -1029,16 +1040,10 @@ class Executor:
                 ctx._pending_stmts = []
             self._log("DEBUG", f"[media] kind={media_kind} waiting_for={ctx.waiting_for!r} файл_id={ctx.get('файл_id')!r} scenario={ctx.scenario!r} pending={len(getattr(ctx,'_pending_stmts',[]))}", ctx)
             if ctx.waiting_for and ctx.get("файл_id"):
-                ctx.set(ctx.waiting_for, ctx.get("файл_id"))
                 self._log("DEBUG", f"[media] → сохранили файл_id в {ctx.waiting_for!r}, pending_stmts={len(ctx._pending_stmts)}", ctx)
-                ctx.waiting_for = None
-                if ctx.scenario:
-                    self._log("DEBUG", f"[media] → _continue_scenario({ctx.scenario!r})", ctx)
-                    self._continue_scenario(ctx)
-                elif getattr(ctx, "_pending_stmts", None):
-                    pending = ctx._pending_stmts
-                    ctx._pending_stmts = []
-                    self._exec_body(pending, ctx)
+                self._resume_waiting_input(ctx, ctx.get("файл_id"))
+                ctx._return_requested = False
+                self._run_after_each(ctx)
                 return
             for h in self.program.handlers:
                 if h.kind == media_kind:
@@ -1046,10 +1051,9 @@ class Executor:
             return
 
         if ctx.waiting_for and text and not text.startswith("/"):
-            ctx.set(ctx.waiting_for, text)
-            ctx.waiting_for = None
-            if ctx.scenario:
-                self._continue_scenario(ctx)
+            self._resume_waiting_input(ctx, text)
+            ctx._return_requested = False
+            self._run_after_each(ctx)
             return
 
         if text == "/start":
@@ -1157,7 +1161,7 @@ class Executor:
 
         signal = None
         try:
-            for stmt in stmts:
+            for idx, stmt in enumerate(stmts):
                 result = self._exec(stmt, ctx)
 
                 if isinstance(stmt, If):
@@ -1175,8 +1179,10 @@ class Executor:
                 # FSM semantics: `спросить ... → var` должен поставить ожидание и
                 # остановить выполнение текущего шага до ввода пользователя.
                 if getattr(ctx, "waiting_for", None):
-                    # Сохраняем оставшиеся инструкции шага для продолжения после ввода
-                    idx = stmts.index(stmt)
+                    # Сохраняем оставшиеся инструкции шага для продолжения после ввода.
+                    # Используем текущий индекс, а не list.index(stmt): dataclass-узлы
+                    # сравниваются по значению, поэтому одинаковые инструкции могли
+                    # вернуть позицию первого дубля и зациклить продолжение.
                     ctx._pending_stmts = stmts[idx + 1:]
                     break
         except (_BreakSignal, _ContinueSignal) as e:

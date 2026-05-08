@@ -8,7 +8,6 @@ Cicada Runner — связывает парсер, адаптер и испол�
 """
 
 import os
-import sys
 import time
 import logging
 from pathlib import Path
@@ -64,7 +63,7 @@ def format_update(u: dict) -> str:
 CURRENT_VERSION = "1.0"
 
 
-def load_program(path: str):
+def load_program(path: str, require_token: bool = True):
     base_path = os.path.dirname(os.path.abspath(path))
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
@@ -77,7 +76,7 @@ def load_program(path: str):
             raise Exception(f"Файл требует более новую версию Cicada: {file_version}")
         print(f"[WARN] Версия бота {file_version}, интерпретатор {CURRENT_VERSION}")
 
-    if not program.config.get("token"):
+    if require_token and not program.config.get("token"):
         raise Exception('Добавь строку: бот "TOKEN"  в начало .ccd файла')
 
     return program
@@ -138,7 +137,7 @@ def run_file(path: str, debug: bool = False, watch: bool = False, log_to_file: b
                 mtime = Path(path).stat().st_mtime
                 if mtime != file_mtime:
                     file_mtime = mtime
-                    logger.info(f"[RELOAD] Файл изменился, перезагружаю...")
+                    logger.info("[RELOAD] Файл изменился, перезагружаю...")
                     try:
                         program  = load_program(path)
                         executor = Executor(program, tg)
