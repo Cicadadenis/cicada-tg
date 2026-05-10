@@ -5,10 +5,12 @@ Cicada Executor — обходит AST и вызывает Telegram API.
 Каждая инструкция — отдельный метод _exec_<тип>.
 """
 
+import re
 import time
 import json as _json
 import datetime as _dt
 import os as _os
+from urllib.parse import quote as _url_quote
 from cicada.core import (
     ButtonsEffect, CallbackEvent, CoreEffect, CoreEvent, InlineKeyboardEffect,
     MediaEffect, MediaEvent, MessageEffect, MessageEvent, PlatformEffect,
@@ -144,10 +146,15 @@ def _to_number(val, op: str, side: str):
             f"Используйте в_число(переменная) для явного преобразования."
         )
     if isinstance(val, _NUMERIC):
-        return float(val)
+        return val
     if isinstance(val, str):
+        s = val.strip()
         try:
-            return float(val)
+            if re.fullmatch(r"-?\d+", s):
+                return int(s)
+            if re.fullmatch(r"-?\d+\.\d+", s):
+                return float(s)
+            return float(s)
         except ValueError:
             raise CicadaTypeError(
                 f"Операция '{op}': {side} — строка {val!r}, не является числом.\n"
@@ -162,6 +169,19 @@ def _coerce_numeric(left, right, op: str):
     l = _to_number(left,  op, "левый операнд")
     r = _to_number(right, op, "правый операнд")
     return l, r
+
+
+def _auto_cast(value):
+    if isinstance(value, str):
+        value = value.strip()
+
+        if re.fullmatch(r"-?\d+", value):
+            return int(value)
+
+        if re.fullmatch(r"-?\d+\.\d+", value):
+            return float(value)
+
+    return value
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -214,6 +234,8 @@ _BUILTIN_FUNCS = {
     "формат_даты",
     # JSON
     "разобрать_json", "в_json",
+    # URL (значения в query string)
+    "кодировать_url",
 }
 
 _FORBIDDEN_FUNCS = {
@@ -450,7 +472,10 @@ def _eval_binop(node: BinaryOp, ctx, strict: bool):
         if op == "*":  return l * r
         if op == "/":
             if r == 0: raise CicadaRuntimeError("Деление на ноль")
-            return l / r
+            q = l / r
+            if isinstance(q, float) and q.is_integer():
+                return int(q)
+            return q
         if op == "//":
             if r == 0: raise CicadaRuntimeError("Целочисленное деление на ноль")
             return int(l // r)
@@ -558,9 +583,15 @@ def _call_builtin(name: str, args: list):
             raise CicadaTypeError("в_число(): нужен хотя бы один аргумент.")
         v = args[0]
         if isinstance(v, bool):     return 1 if v else 0
-        if isinstance(v, _NUMERIC): return float(v)
+        if isinstance(v, _NUMERIC): return v
         if isinstance(v, str):
-            try:    return float(v)
+            s = v.strip()
+            try:
+                if re.fullmatch(r"-?\d+", s):
+                    return int(s)
+                if re.fullmatch(r"-?\d+\.\d+", s):
+                    return float(s)
+                return float(s)
             except ValueError:
                 raise CicadaTypeError(
                     f"в_число(): не удаётся преобразовать {v!r} в число."
@@ -690,6 +721,14 @@ def _call_builtin(name: str, args: list):
             return _json.dumps(v, ensure_ascii=False)
         except TypeError as e:
             raise CicadaRuntimeError(f"в_json(): не удаётся сериализовать: {e}")
+
+    # ── URL ────────────────────────────────────────────────────────────
+
+    if name == "кодировать_url":
+        if not args:
+            return ""
+        # Полное кодирование для подстановки в ?data=… (пробелы, &, кириллица)
+        return _url_quote(str(args[0]), safe="")
 
     raise CicadaRuntimeError(f"Неизвестная функция: '{name}'")
 
@@ -836,16 +875,27 @@ class Executor:
                 return val.value
             return val
 
+        def _fmt_scalar(val):
+            if val is None:
+                return ""
+            val = _unwrap(val)
+            if isinstance(val, bool):
+                return str(val)
+            if isinstance(val, int):
+                return str(val)
+            if isinstance(val, float):
+                return str(int(val)) if val.is_integer() else str(val)
+            return str(val)
+
         def _fmt(val):
             if val is None:
                 return ""
-            # Разворачиваем Literal
             val = _unwrap(val)
             if isinstance(val, list):
-                return ", ".join(str(_unwrap(x)) for x in val)
+                return ", ".join(_fmt_scalar(x) for x in val)
             if isinstance(val, dict):
-                return ", ".join(f"{_unwrap(k)}={_unwrap(v)}" for k, v in val.items())
-            return str(val)
+                return ", ".join(f"{_fmt_scalar(k)}={_fmt_scalar(v)}" for k, v in val.items())
+            return _fmt_scalar(val)
 
         result = []
         for part in parts:
@@ -858,6 +908,37 @@ class Executor:
 
     def _resolve_val(self, val, ctx):
         return self._eval(val, ctx)
+
+    def _regex_fallback_db_template(self, template: str, ctx) -> str:
+        """Подстановка {chat_id} / {user_id} без парсера, если основной путь шаблона не сработал."""
+
+        def repl(m: re.Match) -> str:
+            name = m.group(1).strip()
+            if name == "chat_id":
+                return str(ctx.chat_id)
+            if name == "user_id":
+                return str(ctx.user_id)
+            return m.group(0)
+
+        return re.sub(r"\{([^}]+)\}", repl, template)
+
+    def _render_template_string(self, template: str, ctx) -> str:
+        """Разбор шаблона ключа БД: parse_string_expr + _render_parts; иначе regex-fallback на chat_id/user_id."""
+        if not template or "{" not in template:
+            return str(template)
+        from cicada.parser import parse_string_expr
+
+        try:
+            parts = parse_string_expr(f'"{template}"')
+            return self._render_parts(parts, ctx)
+        except Exception:
+            return self._regex_fallback_db_template(template, ctx)
+
+    def _resolve_db_key(self, key, ctx) -> str:
+        """Ключ БД: строковый шаблон через _render_template_string, иначе выражение через _resolve_val."""
+        if isinstance(key, str):
+            return self._render_template_string(key, ctx)
+        return str(self._resolve_val(key, ctx))
 
     # ═══════════════════════════════════════════════════════════════
     #  Entry point
@@ -996,10 +1077,11 @@ class Executor:
 
     def _resume_waiting_input(self, ctx, value):
         """Сохраняет ответ пользователя и продолжает отложенное выполнение."""
-        ctx.set(ctx.waiting_for, value)
+        ctx.set(ctx.waiting_for, _auto_cast(value))
         ctx.waiting_for = None
 
         if ctx.scenario:
+            self._recover_pending_tail_if_lost(ctx)
             self._continue_scenario(ctx)
             return
 
@@ -1007,6 +1089,52 @@ class Executor:
         if pending:
             ctx._pending_stmts = []
             self._exec_body(pending, ctx)
+
+    def _answer_value_for_media_kind(self, media_kind: str, ctx) -> str | None:
+        """Значение, которое кладём в переменную спросить при приходе медиа."""
+        if media_kind in ("document_received", "photo_received", "voice_received",
+                          "sticker_received"):
+            fid = ctx.get("файл_id")
+            return str(fid) if fid not in (None, "") else None
+        if media_kind == "location_received":
+            lat, lon = ctx.get("широта"), ctx.get("долгота")
+            if lat is None or lon is None or lat == "" or lon == "":
+                return None
+            return f"{lat},{lon}"
+        if media_kind == "contact_received":
+            phone = ctx.get("контакт_телефон")
+            if phone not in (None, ""):
+                return str(phone)
+            name = ctx.get("контакт_имя")
+            return str(name) if name not in (None, "") else None
+        return None
+
+    def _recover_pending_tail_if_lost(self, ctx):
+        """Если _pending_stmts потерялся (рестарт, сериализация), восстанавливаем хвост после спросить."""
+        if getattr(ctx, "_pending_stmts", None):
+            return
+        if not ctx.scenario:
+            return
+        steps = self.program.scenarios.get(ctx.scenario, [])
+        if ctx.step < 1:
+            return
+        prev_idx = ctx.step - 1
+        if prev_idx < 0 or prev_idx >= len(steps):
+            return
+        prev = steps[prev_idx]
+        if isinstance(prev, Step):
+            body = prev.body
+            for i, stmt in enumerate(body):
+                if isinstance(stmt, Ask):
+                    tail = body[i + 1 :]
+                    if tail:
+                        ctx._pending_stmts = tail
+                    break
+            return
+        if isinstance(prev, Ask):
+            tail = steps[prev_idx + 1 :]
+            if tail:
+                ctx._pending_stmts = tail
 
     def _handle_message(self, msg: dict):
         chat_id   = msg["chat"]["id"]
@@ -1038,10 +1166,11 @@ class Executor:
         if media_kind:
             if not hasattr(ctx, "_pending_stmts"):
                 ctx._pending_stmts = []
-            self._log("DEBUG", f"[media] kind={media_kind} waiting_for={ctx.waiting_for!r} файл_id={ctx.get('файл_id')!r} scenario={ctx.scenario!r} pending={len(getattr(ctx,'_pending_stmts',[]))}", ctx)
-            if ctx.waiting_for and ctx.get("файл_id"):
-                self._log("DEBUG", f"[media] → сохранили файл_id в {ctx.waiting_for!r}, pending_stmts={len(ctx._pending_stmts)}", ctx)
-                self._resume_waiting_input(ctx, ctx.get("файл_id"))
+            answer = self._answer_value_for_media_kind(media_kind, ctx)
+            self._log("DEBUG", f"[media] kind={media_kind} waiting_for={ctx.waiting_for!r} answer={answer!r} файл_id={ctx.get('файл_id')!r} scenario={ctx.scenario!r} pending={len(getattr(ctx,'_pending_stmts',[]))}", ctx)
+            if ctx.waiting_for and answer is not None:
+                self._log("DEBUG", f"[media] → ответ в {ctx.waiting_for!r}, pending_stmts={len(ctx._pending_stmts)}", ctx)
+                self._resume_waiting_input(ctx, answer)
                 ctx._return_requested = False
                 self._run_after_each(ctx)
                 return
@@ -1559,21 +1688,17 @@ class Executor:
                 f"Шаг или сценарий '{target}' не найден", stmt
             )
 
-    def _interpolate_key(self, key: str, ctx) -> str:
-        """Интерполирует {var} в строке ключа БД."""
-        if '{' not in str(key):
-            return str(key)
-        from cicada.parser import parse_string_expr
-        parts = parse_string_expr(f'"{key}"')
-        return self._render_parts(parts, ctx)
-
     def _exec_save_to_db(self, stmt: SaveToDB, ctx):
         value = self._resolve_val(stmt.value, ctx)
-        key = self._interpolate_key(stmt.key, ctx)
+        key = self._resolve_db_key(stmt.key, ctx)
+        if self.debug:
+            print(f"[STATE] saving key={key!r} user_id={ctx.user_id}")
         self.store.set(str(ctx.user_id), key, value)
 
     def _exec_load_from_db(self, stmt: LoadFromDB, ctx):
-        key = self._interpolate_key(stmt.key, ctx)
+        key = self._resolve_db_key(stmt.key, ctx)
+        if self.debug:
+            print(f"[STATE] loading key={key!r} user_id={ctx.user_id}")
         value = self.store.get(str(ctx.user_id), key)
         ctx.set(stmt.variable, value if value is not None else "")
 
@@ -1807,7 +1932,7 @@ class Executor:
 
     def _exec_delete_from_db(self, stmt: DeleteFromDB, ctx):
         """удалить "ключ" — удаление ключа из БД."""
-        key = self._resolve_val(stmt.key, ctx) if not isinstance(stmt.key, str) else stmt.key
+        key = self._resolve_db_key(stmt.key, ctx)
         self.store.delete(str(ctx.user_id), str(key))
 
     def _exec_get_all_db_keys(self, stmt: GetAllDBKeys, ctx):
@@ -1817,14 +1942,18 @@ class Executor:
 
     def _exec_save_global_db(self, stmt: SaveGlobalDB, ctx):
         """сохранить_глобально "ключ" = значение."""
-        key   = self._resolve_val(stmt.key, ctx)   if not isinstance(stmt.key, str)   else stmt.key
+        key   = self._resolve_db_key(stmt.key, ctx)
         value = self._resolve_val(stmt.value, ctx)
+        if self.debug:
+            print(f"[STATE] saving key={key!r} user_id={ctx.user_id}")
         self.store.set_global(str(key), value)
 
     def _exec_load_from_user_db(self, stmt: LoadFromUserDB, ctx):
         """получить от USER_ID "ключ" → переменная."""
         uid   = self._resolve_val(stmt.user_id, ctx)
-        key   = self._resolve_val(stmt.key, ctx) if not isinstance(stmt.key, str) else stmt.key
+        key   = self._resolve_db_key(stmt.key, ctx)
+        if self.debug:
+            print(f"[STATE] loading key={key!r} user_id={uid}")
         value = self.store.get(str(uid), str(key))
         ctx.set(stmt.variable, value if value is not None else "")
 

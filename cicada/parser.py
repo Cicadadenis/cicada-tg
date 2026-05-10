@@ -1189,7 +1189,13 @@ class Parser:
                 continue
 
             # ── при получении документа: ──
-            if line.startswith("при документе:") or line == "при документе":
+            # README и сценарии часто пишут «при документ:» — поддерживаем наряду с «при документе:»
+            if (
+                line.startswith("при документе:")
+                or line == "при документе"
+                or line.startswith("при документ:")
+                or line == "при документ"
+            ):
                 self.consume()
                 body = self._parse_block()
                 prog.handlers.append(Handler("document_received", None, body))
@@ -1530,6 +1536,14 @@ class Parser:
         if m:
             return SendDocument(m.group(1), m.group(2) or "")
         m = re.match(r'^документ\s+(\w+)$', line)
+        if m:
+            return SendDocument(Variable(m.group(1)), "")
+
+        # отправить файл … — алиас «документ» (иначе строка не попадает в AST и молча пропускается)
+        m = re.match(r'^отправить файл\s+"([^"]+)"(?:\s+имя="[^"]*")?(?:\s+"([^"]*)")?$', line)
+        if m:
+            return SendDocument(m.group(1), m.group(2) or "")
+        m = re.match(r'^отправить файл\s+(\w+)$', line)
         if m:
             return SendDocument(Variable(m.group(1)), "")
 

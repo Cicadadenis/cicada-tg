@@ -106,8 +106,8 @@ class TelegramUpdateNormalizer:
     @staticmethod
     def from_message(msg: dict) -> CoreEvent:
         base = TelegramUpdateNormalizer._base_from_message(msg)
-        if "text" in msg:
-            return MessageEvent(**base, text=msg.get("text", ""))
+        # Вложения важнее поля text: иначе сообщение с подписью/аномальным text
+        # стало бы MessageEvent без document/photo — ломается сценарий после спросить.
         if msg.get("photo"):
             return MediaEvent(**base, media_type="фото", file_id=msg["photo"][-1]["file_id"])
         if msg.get("document"):
@@ -126,6 +126,8 @@ class TelegramUpdateNormalizer:
         if msg.get("contact"):
             contact = msg["contact"]
             return MediaEvent(**base, media_type="контакт", contact_name=contact.get("first_name", ""), contact_phone=contact.get("phone_number", ""))
+        if "text" in msg:
+            return MessageEvent(**base, text=msg.get("text", ""))
         return MessageEvent(**base, text="")
 
 

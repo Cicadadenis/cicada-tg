@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cicada-tg"
-version = "0.2.1"
+version = "0.2.7"
 description = "Русский DSL для Telegram ботов"
 authors = [{name = "Cicada Team"}]
 readme = "README.md"
