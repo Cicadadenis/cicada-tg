@@ -19,7 +19,7 @@ from cicada.core import (
 
 from cicada.parser import (
     Program, Handler, Reply, RandomReply, Ask, Remember, If,
-    Buttons, InlineButton, InlineKeyboard, Photo, PhotoVar, Sticker,
+    Buttons, InlineButton, InlineKeyboard, InlineKeyboardFromList, Photo, PhotoVar, Sticker,
     GlobalVar,
     StartScenario, Step,
     Condition, VarRef, FunctionCall, ComplexCondition,
@@ -770,6 +770,7 @@ class Executor:
             Buttons:            self._exec_buttons,
             InlineButton:       self._exec_inline_button,
             InlineKeyboard:     self._exec_inline_keyboard,
+            InlineKeyboardFromList: self._exec_inline_keyboard_from_list,
             Photo:              self._exec_photo,
             Sticker:            self._exec_sticker,
             ForwardPhoto:       self._exec_forward_photo,
@@ -1525,6 +1526,32 @@ class Executor:
         и делегируем в _exec_inline_keyboard.
         """
         self._exec_inline_keyboard(InlineKeyboard(rows=[[stmt]]), ctx)
+
+
+    def _exec_inline_keyboard_from_list(self, stmt: InlineKeyboardFromList, ctx):
+        items = self._eval(stmt.items_expr, ctx)
+        if not isinstance(items, list):
+            raise CicadaTypeError("inline-кнопки из списка: ожидается список items.")
+
+        cols = max(1, int(stmt.columns or 1))
+        flat_buttons = []
+        for item in items:
+            if isinstance(item, dict):
+                text = str(item.get(stmt.text_field, ""))
+                item_id = item.get(stmt.id_field, "")
+            else:
+                text = str(item)
+                item_id = item
+            if not text:
+                continue
+            flat_buttons.append(InlineButton(text=text, callback=f"{stmt.callback_prefix}{item_id}"))
+
+        if stmt.append_back:
+            flat_buttons.append(InlineButton(text="🔙 Назад", callback="back"))
+
+        rows = [flat_buttons[i:i + cols] for i in range(0, len(flat_buttons), cols)]
+        if rows:
+            self._exec_inline_keyboard(InlineKeyboard(rows=rows), ctx)
 
     def _exec_inline_keyboard(self, stmt: InlineKeyboard, ctx):
         """
