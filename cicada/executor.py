@@ -19,14 +19,18 @@ from cicada.core import (
 
 from cicada.parser import (
     Program, Handler, Reply, RandomReply, Ask, Remember, If,
+<<<<<<< HEAD
     Buttons, InlineButton, InlineKeyboard, InlineKeyboardFromList, Photo, PhotoVar, Sticker,
+=======
+    Buttons, InlineButton, InlineKeyboard, InlineKeyboardFromList, InlineKeyboardFromDB, Photo, PhotoVar, Sticker,
+>>>>>>> 8838bf7 (Add dynamic inline keyboards, HTTP JSON blocks and catalog modules)
     GlobalVar,
     StartScenario, Step,
     Condition, VarRef, FunctionCall, ComplexCondition,
     ForwardPhoto, SaveFile,
     SendDocument, SendAudio, SendVideo, SendVoice,
     SendLocation, SendContact, SendPoll, SendInvoice,
-    SendGame, SendMarkdown, DownloadFile,
+    SendGame, SendMarkdown, SendHTML, SendMarkdownV2, DownloadFile,
     EndScenario, ReturnFromScenario, RepeatStep, GotoStep,
     SaveToDB, LoadFromDB,
     HttpGet, HttpPost,
@@ -41,8 +45,8 @@ from cicada.parser import (
     WhileLoop, BreakLoop, ContinueLoop, Timeout,
     Notify, Broadcast,
     CheckSubscription, GetChatMemberRole, ForwardMsg,
-    LoadJson, SaveJson, DeleteFile, DeleteDictKey, SetDictKey,
-    HttpPatch, HttpPut, HttpDelete, SetHttpHeaders,
+    LoadJson, ParseJson, SaveJson, DeleteFile, DeleteDictKey, SetDictKey,
+    HttpPatch, HttpPut, HttpDelete, SetHttpHeaders, FetchJson,
     DeleteFromDB, GetAllDBKeys, SaveGlobalDB, LoadFromUserDB,
     ReturnValue, CallBlock,
 )
@@ -771,12 +775,18 @@ class Executor:
             InlineButton:       self._exec_inline_button,
             InlineKeyboard:     self._exec_inline_keyboard,
             InlineKeyboardFromList: self._exec_inline_keyboard_from_list,
+<<<<<<< HEAD
+=======
+            InlineKeyboardFromDB: self._exec_inline_keyboard_from_db,
+>>>>>>> 8838bf7 (Add dynamic inline keyboards, HTTP JSON blocks and catalog modules)
             Photo:              self._exec_photo,
             Sticker:            self._exec_sticker,
             ForwardPhoto:       self._exec_forward_photo,
             SaveFile:           self._exec_save_file,
             StartScenario:      self._exec_start_scenario_stmt,
             SendMarkdown:       self._exec_send_markdown,
+            SendHTML:           self._exec_send_html,
+            SendMarkdownV2:     self._exec_send_markdown_v2,
             SendDocument:       self._exec_send_document,
             SendAudio:          self._exec_send_audio,
             SendVideo:          self._exec_send_video,
@@ -818,6 +828,7 @@ class Executor:
             ForwardMsg:         self._exec_forward_msg,
             # Файлы и JSON
             LoadJson:           self._exec_load_json,
+            ParseJson:          self._exec_parse_json,
             SaveJson:           self._exec_save_json,
             DeleteFile:         self._exec_delete_file,
             DeleteDictKey:      self._exec_delete_dict_key,
@@ -827,6 +838,7 @@ class Executor:
             HttpPut:            self._exec_http_put,
             HttpDelete:         self._exec_http_delete,
             SetHttpHeaders:     self._exec_set_http_headers,
+            FetchJson:          self._exec_fetch_json,
             # БД расширения
             DeleteFromDB:       self._exec_delete_from_db,
             GetAllDBKeys:       self._exec_get_all_db_keys,
@@ -1056,11 +1068,20 @@ class Executor:
             return
 
         matched = False
+        # Точные callback-обработчики важнее общего `при нажатии:`.
+        # Иначе роутер без trigger перехватывает кнопку вроде "назад" раньше
+        # специализированного `при нажатии "назад":`.
         for h in self.program.handlers:
-            if h.kind == "callback" and (h.trigger is None or h.trigger == data):
+            if h.kind == "callback" and h.trigger == data:
                 self._exec_body(h.body, ctx)
                 matched = True
                 break
+        if not matched:
+            for h in self.program.handlers:
+                if h.kind == "callback" and h.trigger is None:
+                    self._exec_body(h.body, ctx)
+                    matched = True
+                    break
 
         if not matched:
             matched = self._run_text_handlers(ctx)
@@ -1533,22 +1554,85 @@ class Executor:
         if not isinstance(items, list):
             raise CicadaTypeError("inline-кнопки из списка: ожидается список items.")
 
+<<<<<<< HEAD
         cols = max(1, int(stmt.columns or 1))
         flat_buttons = []
         for item in items:
             if isinstance(item, dict):
                 text = str(item.get(stmt.text_field, ""))
                 item_id = item.get(stmt.id_field, "")
+=======
+        self._send_inline_items(
+            items,
+            ctx,
+            text_field=stmt.text_field,
+            id_field=stmt.id_field,
+            callback_prefix=stmt.callback_prefix,
+            columns=stmt.columns,
+            back_text="🔙 Назад" if stmt.append_back else "",
+            back_callback="back" if stmt.append_back else "",
+        )
+
+    def _exec_inline_keyboard_from_db(self, stmt: InlineKeyboardFromDB, ctx):
+        key = self._resolve_db_key(stmt.key, ctx)
+        if self.debug:
+            print(f"[STATE] loading key={key!r} user_id={ctx.user_id}")
+        items = self.store.get(str(ctx.user_id), key)
+        if items is None:
+            items = self.store.get_global(key)
+        if items in (None, ""):
+            items = []
+        if not isinstance(items, list):
+            raise CicadaTypeError(f"inline из бд: ключ '{key}' должен содержать список.")
+
+        self._send_inline_items(
+            items,
+            ctx,
+            text_field=stmt.text_field,
+            id_field=stmt.id_field,
+            callback_prefix=stmt.callback_prefix,
+            columns=stmt.columns,
+            back_text=stmt.back_text,
+            back_callback=stmt.back_callback,
+        )
+
+    def _send_inline_items(
+        self,
+        items: list,
+        ctx,
+        *,
+        text_field: str,
+        id_field: str,
+        callback_prefix: str,
+        columns: int,
+        back_text: str = "",
+        back_callback: str = "",
+    ):
+        flat_buttons = []
+        for item in items:
+            if isinstance(item, dict):
+                text = str(item.get(text_field, ""))
+                item_id = item.get(id_field, text)
+>>>>>>> 8838bf7 (Add dynamic inline keyboards, HTTP JSON blocks and catalog modules)
             else:
                 text = str(item)
                 item_id = item
             if not text:
                 continue
+<<<<<<< HEAD
             flat_buttons.append(InlineButton(text=text, callback=f"{stmt.callback_prefix}{item_id}"))
 
         if stmt.append_back:
             flat_buttons.append(InlineButton(text="🔙 Назад", callback="back"))
 
+=======
+            flat_buttons.append(InlineButton(text=text, callback=f"{callback_prefix}{item_id}"))
+
+        if back_text and back_callback:
+            flat_buttons.append(InlineButton(text=back_text, callback=back_callback))
+
+        cols = max(1, int(columns or 1))
+>>>>>>> 8838bf7 (Add dynamic inline keyboards, HTTP JSON blocks and catalog modules)
         rows = [flat_buttons[i:i + cols] for i in range(0, len(flat_buttons), cols)]
         if rows:
             self._exec_inline_keyboard(InlineKeyboard(rows=rows), ctx)
@@ -1593,7 +1677,8 @@ class Executor:
         self._send_media(ctx.chat_id, "photo", stmt.url)
 
     def _exec_sticker(self, stmt: Sticker, ctx):
-        self._send_media(ctx.chat_id, "sticker", stmt.file_id)
+        file_id = eval_expr(stmt.file_id, ctx) if not isinstance(stmt.file_id, str) else stmt.file_id
+        self._send_media(ctx.chat_id, "sticker", str(file_id))
 
     def _exec_forward_photo(self, stmt: ForwardPhoto, ctx):
         file_id = ctx.get("файл_id", "")
@@ -1609,9 +1694,18 @@ class Executor:
         self._start_scenario(ctx, stmt.name)
 
     def _exec_send_markdown(self, stmt: SendMarkdown, ctx):
-        text = self._render_parts(stmt.parts, ctx)
-        self._send_platform("markdown", ctx.chat_id, text=text)
-        self.tg.send_markdown(ctx.chat_id, text)
+        self._send_formatted_text(ctx, stmt.parts, "markdown", "send_markdown")
+
+    def _exec_send_html(self, stmt: SendHTML, ctx):
+        self._send_formatted_text(ctx, stmt.parts, "html", "send_html")
+
+    def _exec_send_markdown_v2(self, stmt: SendMarkdownV2, ctx):
+        self._send_formatted_text(ctx, stmt.parts, "markdown_v2", "send_markdown_v2")
+
+    def _send_formatted_text(self, ctx, parts: list, kind: str, method_name: str):
+        text = self._render_parts(parts, ctx)
+        self._send_platform(kind, ctx.chat_id, text=text)
+        getattr(self.tg, method_name)(ctx.chat_id, text)
 
     def _exec_send_document(self, stmt: SendDocument, ctx):
         file = eval_expr(stmt.file, ctx) if not isinstance(stmt.file, str) else stmt.file
@@ -1727,6 +1821,8 @@ class Executor:
         if self.debug:
             print(f"[STATE] loading key={key!r} user_id={ctx.user_id}")
         value = self.store.get(str(ctx.user_id), key)
+        if value is None:
+            value = self.store.get_global(key)
         ctx.set(stmt.variable, value if value is not None else "")
 
     def _exec_log(self, stmt: Log, ctx):
@@ -1827,6 +1923,18 @@ class Executor:
         except _json.JSONDecodeError as e:
             raise CicadaRuntimeError(f"json_файл: ошибка разбора JSON: {e}", stmt)
 
+    def _exec_parse_json(self, stmt: ParseJson, ctx):
+        """разобрать_json источник → переменная."""
+        source = self._resolve_val(stmt.source, ctx)
+        if isinstance(source, (dict, list)):
+            ctx.set(stmt.variable, source)
+            return
+        try:
+            data = _json.loads(str(source))
+        except _json.JSONDecodeError as e:
+            raise CicadaRuntimeError(f"разобрать_json: ошибка разбора JSON: {e}", stmt)
+        ctx.set(stmt.variable, data)
+
     def _exec_save_json(self, stmt: SaveJson, ctx):
         """сохранить_json "путь" = переменная."""
         path = self._resolve_val(stmt.path, ctx) if not isinstance(stmt.path, str) else stmt.path
@@ -1870,6 +1978,12 @@ class Executor:
 
     # ── HTTP расширения ───────────────────────────────────────────────
 
+    def _resolve_http_url(self, url, ctx) -> str:
+        """URL может быть строковым шаблоном или выражением."""
+        if isinstance(url, str):
+            return self._render_template_string(url, ctx)
+        return str(self._resolve_val(url, ctx))
+
     def _get_http_headers(self, stmt_headers: dict, ctx) -> dict:
         """Возвращает объединённые заголовки: ctx._http_headers + заголовки инструкции."""
         base = dict(getattr(ctx, "_http_headers", {}) or {})
@@ -1879,10 +1993,12 @@ class Executor:
     def _resolve_http_data(self, data, ctx):
         """Разрешает тело запроса; dict → отправляется как json."""
         resolved = self._resolve_val(data, ctx)
+        if isinstance(resolved, str):
+            return self._render_template_string(resolved, ctx)
         return resolved
 
     def _exec_http_patch(self, stmt: HttpPatch, ctx):
-        url     = self._resolve_val(stmt.url, ctx) if not isinstance(stmt.url, str) else stmt.url
+        url     = self._resolve_http_url(stmt.url, ctx)
         data    = self._resolve_http_data(stmt.data, ctx)
         headers = self._get_http_headers(stmt.headers, ctx)
         try:
@@ -1897,7 +2013,7 @@ class Executor:
             raise CicadaRuntimeError(f"HTTP PATCH {url}: {e}", stmt)
 
     def _exec_http_put(self, stmt: HttpPut, ctx):
-        url     = self._resolve_val(stmt.url, ctx) if not isinstance(stmt.url, str) else stmt.url
+        url     = self._resolve_http_url(stmt.url, ctx)
         data    = self._resolve_http_data(stmt.data, ctx)
         headers = self._get_http_headers(stmt.headers, ctx)
         try:
@@ -1912,7 +2028,7 @@ class Executor:
             raise CicadaRuntimeError(f"HTTP PUT {url}: {e}", stmt)
 
     def _exec_http_delete(self, stmt: HttpDelete, ctx):
-        url     = self._resolve_val(stmt.url, ctx) if not isinstance(stmt.url, str) else stmt.url
+        url     = self._resolve_http_url(stmt.url, ctx)
         headers = self._get_http_headers(stmt.headers, ctx)
         try:
             resp = self.http.delete(url, headers=headers, timeout=30)
@@ -1933,27 +2049,44 @@ class Executor:
     # ── HTTP GET/POST теперь тоже используют _http_headers ──────────
 
     def _exec_http_get(self, stmt: HttpGet, ctx):
+        url = self._resolve_http_url(stmt.url, ctx)
         try:
             headers = self._get_http_headers(stmt.headers, ctx)
-            resp    = self.http.get(stmt.url, headers=headers, timeout=30)
+            resp    = self.http.get(url, headers=headers, timeout=30)
             ctx.set(stmt.variable, resp.text)
         except Exception as e:
             ctx.set(stmt.variable, "")
-            raise CicadaRuntimeError(f"HTTP GET {stmt.url}: {e}", stmt)
+            raise CicadaRuntimeError(f"HTTP GET {url}: {e}", stmt)
 
     def _exec_http_post(self, stmt: HttpPost, ctx):
+        url = self._resolve_http_url(stmt.url, ctx)
         try:
-            data    = self._resolve_val(stmt.data, ctx)
+            data    = self._resolve_http_data(stmt.data, ctx)
             headers = self._get_http_headers(stmt.headers, ctx)
             if isinstance(data, dict):
-                resp = self.http.post(stmt.url, json=data, headers=headers, timeout=30)
+                resp = self.http.post(url, json=data, headers=headers, timeout=30)
             else:
-                resp = self.http.post(stmt.url, data=str(data) if data is not None else None,
+                resp = self.http.post(url, data=str(data) if data is not None else None,
                                      headers=headers, timeout=30)
             ctx.set(stmt.variable, resp.text)
         except Exception as e:
             ctx.set(stmt.variable, "")
-            raise CicadaRuntimeError(f"HTTP POST {stmt.url}: {e}", stmt)
+            raise CicadaRuntimeError(f"HTTP POST {url}: {e}", stmt)
+
+    def _exec_fetch_json(self, stmt: FetchJson, ctx):
+        """fetch_json url → переменная: GET-запрос и разбор JSON-ответа."""
+        url = self._resolve_http_url(stmt.url, ctx)
+        try:
+            headers = self._get_http_headers(stmt.headers, ctx)
+            resp = self.http.get(url, headers=headers, timeout=30)
+            data = _json.loads(resp.text)
+            ctx.set(stmt.variable, data)
+        except _json.JSONDecodeError as e:
+            ctx.set(stmt.variable, "")
+            raise CicadaRuntimeError(f"fetch_json {url}: ошибка разбора JSON: {e}", stmt)
+        except Exception as e:
+            ctx.set(stmt.variable, "")
+            raise CicadaRuntimeError(f"fetch_json {url}: {e}", stmt)
 
     # ── База данных расширения ─────────────────────────────────────────
 

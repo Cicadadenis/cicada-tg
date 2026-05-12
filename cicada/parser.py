@@ -16,6 +16,7 @@ Cicada Parser — превращает .cicada файл в AST (дерево п�
     стикер "file_id"
 """
 
+import json as _json
 import re
 import random
 from dataclasses import dataclass, field
@@ -149,6 +150,21 @@ class InlineKeyboardFromList:
 
 
 @dataclass
+<<<<<<< HEAD
+=======
+class InlineKeyboardFromDB:
+    """Динамическая inline-клавиатура из списка в БД текущего пользователя."""
+    key: object
+    text_field: str = "name"
+    id_field: str = "id"
+    callback_prefix: str = ""
+    columns: int = 1
+    back_text: str = ""
+    back_callback: str = ""
+
+
+@dataclass
+>>>>>>> 8838bf7 (Add dynamic inline keyboards, HTTP JSON blocks and catalog modules)
 class Photo:
     url: str
 
@@ -161,7 +177,7 @@ class PhotoVar:
 
 @dataclass
 class Sticker:
-    file_id: str
+    file_id: Any
 
 
 @dataclass
@@ -285,6 +301,16 @@ class SendMarkdown:
 
 
 @dataclass
+class SendHTML:
+    parts: list
+
+
+@dataclass
+class SendMarkdownV2:
+    parts: list
+
+
+@dataclass
 class DownloadFile:
     variable: str
     save_path: str = ""
@@ -293,7 +319,7 @@ class DownloadFile:
 @dataclass
 class HttpGet:
     """HTTP GET запрос"""
-    url: str
+    url: object
     variable: str  # куда сохранить результат
     headers: dict = field(default_factory=dict)
 
@@ -301,7 +327,7 @@ class HttpGet:
 @dataclass
 class HttpPost:
     """HTTP POST запрос"""
-    url: str
+    url: object
     data: Any      # тело запроса
     variable: str  # куда сохранить результат
     headers: dict = field(default_factory=dict)
@@ -488,6 +514,13 @@ class LoadJson:
 
 
 @dataclass
+class ParseJson:
+    """разобрать_json источник → переменная"""
+    source: object
+    variable: str
+
+
+@dataclass
 class SaveJson:
     """сохранить_json "путь" = переменная"""
     path: object
@@ -547,6 +580,14 @@ class HttpDelete:
 class SetHttpHeaders:
     """http_заголовки переменная — устанавливает заголовки для следующих HTTP-вызовов"""
     variable: str
+
+
+@dataclass
+class FetchJson:
+    """fetch_json url → переменная — GET + JSON.parse"""
+    url: object
+    variable: str
+    headers: dict = field(default_factory=dict)
 
 
 # ── База данных расширения ────────────────────────────────────────────
@@ -921,6 +962,11 @@ def _unwrap_literal(node):
 def parse_value(raw: str):
     """Обёртка для обратной совместимости — делегирует в parse_expr."""
     raw = raw.strip()
+    if raw.startswith(("[", "{")) and raw.endswith(("]", "}")):
+        try:
+            return _json.loads(raw)
+        except _json.JSONDecodeError:
+            pass
     # Массив: ["A", "B", "C"] — не поддерживается expression-парсером
     if raw.startswith('[') and raw.endswith(']'):
         items_str = raw[1:-1].strip()
@@ -1520,6 +1566,53 @@ class Parser:
         if m:
             return InlineButton(text=m.group(1), url=m.group(2))
 
+        # inline из бд "ключ" [текст "name"] [id "id"] [callback "prefix"] [columns=2] [назад "Назад" → "cb"]
+        m = re.match(r'^(?:inline|inline-кнопки)\s+из\s+бд\s+(.+)$', line)
+        if m:
+            rest = m.group(1).strip()
+            key_match = re.match(r'^("[^"]+"|\w+)', rest)
+            if not key_match:
+                raise SyntaxError(f"Не понимаю ключ БД в inline из бд: {line}")
+            key_raw = key_match.group(1)
+            options = rest[key_match.end():].strip()
+
+            text_field = "name"
+            id_field = "id"
+            callback_prefix = ""
+            columns = 1
+            back_text = ""
+            back_callback = ""
+
+            opt = re.search(r'\bтекст\s+"([^"]+)"', options)
+            if opt:
+                text_field = opt.group(1)
+            opt = re.search(r'\bid\s+"([^"]+)"', options)
+            if opt:
+                id_field = opt.group(1)
+            opt = re.search(r'\bcallback\s+"([^"]*)"', options)
+            if opt:
+                callback_prefix = opt.group(1)
+            opt = re.search(r'\bcolumns\s*=?\s*(\d+)', options)
+            if opt:
+                columns = int(opt.group(1))
+            opt = re.search(r'\bколонки\s+(\d+)', options)
+            if opt:
+                columns = int(opt.group(1))
+            opt = re.search(r'\bназад\s+"([^"]+)"\s*(?:→|->)\s*"([^"]+)"', options)
+            if opt:
+                back_text = opt.group(1)
+                back_callback = opt.group(2)
+
+            return InlineKeyboardFromDB(
+                key=parse_value(key_raw),
+                text_field=text_field,
+                id_field=id_field,
+                callback_prefix=callback_prefix,
+                columns=columns,
+                back_text=back_text,
+                back_callback=back_callback,
+            )
+
         # картинка/фото "url" или картинка/фото переменная
         m = re.match(r'^(?:картинка|фото)\s+"([^"]+)"$', line)
         if m:
@@ -1540,6 +1633,19 @@ class Parser:
         if line == "переслать фото":
             return ForwardPhoto()
 
+        # переслать документ — алиас для отправки текущего document file_id обратно
+        m = re.match(r'^переслать документ\s*"([^"]*)"$', line)
+        if m:
+            return SendDocument(Variable("файл_id"), m.group(1))
+        if line == "переслать документ":
+            return SendDocument(Variable("файл_id"), "")
+
+        # переслать голосовое/стикер — отправляет полученный file_id обратно в чат
+        if line in ("переслать голосовое", "переслать голос"):
+            return SendVoice(Variable("файл_id"), "")
+        if line == "переслать стикер":
+            return Sticker(Variable("файл_id"))
+
         # запомни файл → переменная
         m = re.match(r'^запомни файл\s*→\s*(\w+)$', line)
         if m:
@@ -1550,10 +1656,20 @@ class Parser:
         if m:
             return StartScenario(m.group(1))
 
-        # ответить_md / ответ_md "текст"
+        # ответ_md "текст" — Telegram legacy Markdown
         m = re.match(r'^ответ_md\s+(.+)$', line)
         if m:
             return SendMarkdown(parse_string_expr(m.group(1)))
+
+        # ответ_html "текст" — Telegram HTML
+        m = re.match(r'^ответ_html\s+(.+)$', line)
+        if m:
+            return SendHTML(parse_string_expr(m.group(1)))
+
+        # ответ_md2 / ответ_markdown_v2 "текст" — Telegram MarkdownV2
+        m = re.match(r'^(?:ответ_md2|ответ_markdown_v2)\s+(.+)$', line)
+        if m:
+            return SendMarkdownV2(parse_string_expr(m.group(1)))
 
         # документ "путь" / документ "путь" "подпись" / документ "путь" имя="name" / документ переменная
         m = re.match(r'^документ\s+"([^"]+)"(?:\s+имя="[^"]*")?(?:\s+"([^"]*)")?$', line)
@@ -1626,15 +1742,25 @@ class Parser:
         if m:
             return DownloadFile("файл_id", m.group(1))
 
-        # http_get "url" → переменная
-        m = re.match(r'^http_get\s+"([^"]+)"\s*→\s*(\w+)$', line)
+        # fetch/http_get URL → переменная
+        m = re.match(r'^(?:fetch|http_get)\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpGet(url=m.group(1), variable=m.group(2))
+            return HttpGet(url=parse_value(m.group(1)), variable=m.group(2))
 
-        # http_post "url" с "data" → переменная
-        m = re.match(r'^http_post\s+"([^"]+)"\s+с\s+"([^"]+)"\s*→\s*(\w+)$', line)
+        # fetch_json URL → переменная (GET + JSON.parse)
+        m = re.match(r'^fetch_json\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpPost(url=m.group(1), data=m.group(2), variable=m.group(3))
+            return FetchJson(url=parse_value(m.group(1)), variable=m.group(2))
+
+        # http_post URL json body → переменная
+        m = re.match(r'^http_post\s+(.+?)\s+json\s+(.+?)\s*→\s*(\w+)$', line)
+        if m:
+            return HttpPost(url=parse_value(m.group(1)), data=parse_value(m.group(2)), variable=m.group(3))
+
+        # http_post URL с data → переменная
+        m = re.match(r'^http_post\s+(.+?)\s+с\s+(.+?)\s*→\s*(\w+)$', line)
+        if m:
+            return HttpPost(url=parse_value(m.group(1)), data=parse_value(m.group(2)), variable=m.group(3))
 
         # лог "сообщение" / лог[level] "сообщение"
         m = re.match(r'^лог(?:\[[^\]]*\])?\s+(.+)$', line)
@@ -1665,11 +1791,11 @@ class Parser:
                 params[key] = val
             return TelegramAPI(method, params)
 
-        # запрос GET "url" → var  /  запрос POST "url" → var
-        m = re.match(r'^запрос\s+(GET|POST|get|post)\s+"([^"]+)"\s*→\s*(\w+)$', line)
+        # запрос GET url → var  /  запрос POST url → var
+        m = re.match(r'^запрос\s+(GET|POST|get|post)\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
             method = m.group(1).upper()
-            url = m.group(2)
+            url = parse_value(m.group(2))
             var = m.group(3)
             if method == "GET":
                 return HttpGet(url=url, variable=var)
@@ -1809,6 +1935,11 @@ class Parser:
         if m:
             return LoadJson(path=parse_value(m.group(1)), variable=m.group(2))
 
+        # разобрать_json источник → переменная
+        m = re.match(r'^разобрать_json\s+(.+?)\s*→\s*(\w+)$', line)
+        if m:
+            return ParseJson(source=parse_value(m.group(1)), variable=m.group(2))
+
         # сохранить_json "путь" = переменная
         m = re.match(r'^сохранить_json\s+"([^"]+)"\s*=\s*(\w+)$', line)
         if m:
@@ -1841,31 +1972,26 @@ class Parser:
 
         # ── HTTP расширения ───────────────────────────────────────────────
 
-        # http_patch "url" с "data" → var  /  http_patch "url" json var → var
-        m = re.match(r'^http_patch\s+"([^"]+)"\s+json\s+(\w+)\s*→\s*(\w+)$', line)
+        # http_patch url с data → var  /  http_patch url json body → var
+        m = re.match(r'^http_patch\s+(.+?)\s+json\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpPatch(url=m.group(1), data=parse_value(m.group(2)), variable=m.group(3))
-        m = re.match(r'^http_patch\s+"([^"]+)"\s+с\s+"([^"]+)"\s*→\s*(\w+)$', line)
+            return HttpPatch(url=parse_value(m.group(1)), data=parse_value(m.group(2)), variable=m.group(3))
+        m = re.match(r'^http_patch\s+(.+?)\s+с\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpPatch(url=m.group(1), data=m.group(2), variable=m.group(3))
+            return HttpPatch(url=parse_value(m.group(1)), data=parse_value(m.group(2)), variable=m.group(3))
 
-        # http_put "url" с "data" → var  /  http_put "url" json var → var
-        m = re.match(r'^http_put\s+"([^"]+)"\s+json\s+(\w+)\s*→\s*(\w+)$', line)
+        # http_put url с data → var  /  http_put url json body → var
+        m = re.match(r'^http_put\s+(.+?)\s+json\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpPut(url=m.group(1), data=parse_value(m.group(2)), variable=m.group(3))
-        m = re.match(r'^http_put\s+"([^"]+)"\s+с\s+"([^"]+)"\s*→\s*(\w+)$', line)
+            return HttpPut(url=parse_value(m.group(1)), data=parse_value(m.group(2)), variable=m.group(3))
+        m = re.match(r'^http_put\s+(.+?)\s+с\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpPut(url=m.group(1), data=m.group(2), variable=m.group(3))
+            return HttpPut(url=parse_value(m.group(1)), data=parse_value(m.group(2)), variable=m.group(3))
 
-        # http_delete "url" → var
-        m = re.match(r'^http_delete\s+"([^"]+)"\s*→\s*(\w+)$', line)
+        # http_delete url → var
+        m = re.match(r'^http_delete\s+(.+?)\s*→\s*(\w+)$', line)
         if m:
-            return HttpDelete(url=m.group(1), variable=m.group(2))
-
-        # http_post с json-телом: http_post "url" json var → result
-        m = re.match(r'^http_post\s+"([^"]+)"\s+json\s+(\w+)\s*→\s*(\w+)$', line)
-        if m:
-            return HttpPost(url=m.group(1), data=parse_value(m.group(2)), variable=m.group(3))
+            return HttpDelete(url=parse_value(m.group(1)), variable=m.group(2))
 
         # http_заголовки переменная — устанавливает заголовки для HTTP-вызовов
         m = re.match(r'^http_заголовки\s+(\w+)$', line)

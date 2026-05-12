@@ -25,7 +25,7 @@ pip install cicada-tg
 ### Из исходников
 
 ```bash
-git clone https://github.com/yourname/cicada-tg.git
+git clone https://github.com/Cicadadenis/cicada-tg.git
 cd cicada-tg
 pip install -e .
 ```
@@ -224,7 +224,7 @@ export CICADA_CONFIG="./config.yaml"
 
 ```bash
 # Клонируем
-git clone https://github.com/yourname/cicada-tg.git
+git clone https://github.com/Cicadadenis/cicada-tg.git
 cd cicada-tg
 
 # Устанавливаем

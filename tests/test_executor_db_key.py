@@ -66,3 +66,21 @@ def test_state_debug_logs(tmp_path, capsys):
     assert "[STATE] saving key='file_1144785510'" in out
     assert "[STATE] loading key='file_1144785510'" in out
     assert "user_id=1144785510" in out
+
+
+def test_load_db_falls_back_to_global_key(tmp_path):
+    store = Database(str(tmp_path / "db.json"))
+    store.set_global("категории", ["Пицца", "Суши"])
+    executor, telegram = make_executor(
+        '''бот "TOKEN"
+при старте:
+    получить "категории" → категории
+    ответ "{категории}"
+''',
+        store=store,
+    )
+
+    executor.handle(message("/start"))
+
+    texts = [e["text"] for e in telegram.outbound if e["type"] == "send_message"]
+    assert texts == ["Пицца, Суши"]
